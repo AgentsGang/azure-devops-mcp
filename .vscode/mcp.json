@@ -1,1 +1,20 @@
-../mcp.json
+{
+    "servers": {
+        "context7": {
+            "url": "https://mcp.context7.com/mcp"
+        },
+        "playwright": {
+            "command": "npx",
+            "args": [
+                "@playwright/mcp@latest",
+                "--headless"
+            ]
+        },
+        "fetch": {
+            "command": "npx",
+            "args": [
+                "mcp-server-fetch-typescript"
+            ]
+        }
+    }
+}

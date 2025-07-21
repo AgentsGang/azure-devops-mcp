@@ -39,6 +39,16 @@ const tenantId = argv.tenant;
 const orgUrl = "https://dev.azure.com/" + orgName;
 
 async function getAzureDevOpsToken(): Promise<AccessToken> {
+  // PAT support
+  if ((process.env.AZURE_DEVOPS_AUTH_TYPE || "").toLowerCase() === "pat") {
+    const pat = process.env.AZURE_DEVOPS_PERSONAL_ACCESS_TOKEN;
+    if (!pat) {
+      throw new Error("AZURE_DEVOPS_PERSONAL_ACCESS_TOKEN must be set when AZURE_DEVOPS_AUTH_TYPE=pat");
+    }
+    // Return a fake AccessToken object for compatibility, but the client will use getPersonalAccessTokenHandler
+    return { token: pat, expiresOnTimestamp: Date.now() + 3600 * 1000 };
+  }
+  
   if (process.env.ADO_MCP_AZURE_TOKEN_CREDENTIALS) {
     process.env.AZURE_TOKEN_CREDENTIALS = process.env.ADO_MCP_AZURE_TOKEN_CREDENTIALS;
   } else {
@@ -61,7 +71,13 @@ async function getAzureDevOpsToken(): Promise<AccessToken> {
 function getAzureDevOpsClient(userAgentComposer: UserAgentComposer): () => Promise<azdev.WebApi> {
   return async () => {
     const token = await getAzureDevOpsToken();
-    const authHandler = azdev.getBearerHandler(token.token);
+    let authHandler;
+    if ((process.env.AZURE_DEVOPS_AUTH_TYPE || "").toLowerCase() === "pat") {
+      // Use PersonalAccessTokenHandler, which sets Basic and base64 encodes
+      authHandler = azdev.getPersonalAccessTokenHandler(token.token);
+    } else {
+      authHandler = azdev.getBearerHandler(token.token);
+    }
     const connection = new azdev.WebApi(orgUrl, authHandler, undefined, {
       productName: "AzureDevOps.MCP",
       productVersion: packageVersion,

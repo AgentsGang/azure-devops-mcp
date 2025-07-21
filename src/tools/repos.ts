@@ -15,8 +15,8 @@ import {
   GitPullRequestQueryType,
 } from "azure-devops-node-api/interfaces/GitInterfaces.js";
 import { z } from "zod";
-import { getCurrentUserDetails } from "./auth.js";
 import { GitRepository } from "azure-devops-node-api/interfaces/TfvcInterfaces.js";
+import { getCurrentUserDetails } from "./auth.js";
 
 const REPO_TOOLS = {
   list_repos_by_project: "repo_list_repos_by_project",
@@ -36,6 +36,7 @@ const REPO_TOOLS = {
   resolve_comment: "repo_resolve_comment",
   search_commits: "repo_search_commits",
   list_pull_requests_by_commits: "repo_list_pull_requests_by_commits",
+  review_pull_request: "repo_review_pull_request"
 };
 
 function branchesFilterOutIrrelevantProperties(branches: GitRef[], top: number) {
@@ -106,7 +107,36 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<Acce
       };
     }
   );
-
+  server.tool(
+    REPO_TOOLS.review_pull_request,
+    "Review a pull request by casting a vote or updating reviewer status (approve, reject, wait, etc.).",
+    {
+      repositoryId: z.string().describe("The repository ID of the pull request's target branch."),
+      pullRequestId: z.number().describe("ID of the pull request."),
+      reviewerId: z.string().describe("ID of the reviewer."),
+      reviewer: z.object({
+        id: z.string().describe("ID of the reviewer."),
+        vote: z.number().describe("Vote value for pull request review: 10=approved, 5=approved with suggestions, 0=no vote, -5=waiting for author, -10=rejected."),
+        displayName: z.string().optional(),
+        uniqueName: z.string().optional(),
+      }).describe("Reviewer's vote object."),
+      project: z.string().optional().describe("Project ID or project name (optional)"),
+    },
+    async ({ reviewer, repositoryId, pullRequestId, reviewerId, project }) => {
+      const connection = await connectionProvider();
+      const gitApi = await connection.getGitApi();
+      const result = await gitApi.createPullRequestReviewer(
+        reviewer,
+        repositoryId,
+        pullRequestId,
+        reviewerId,
+        project
+      );
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    }
+  );
   server.tool(
     REPO_TOOLS.update_pull_request_status,
     "Update status of an existing pull request to active or abandoned.",

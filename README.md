@@ -81,6 +81,7 @@ Interact with these Azure DevOps services:
 - **wit_add_child_work_item**: Replaced by `wit_add_child_work_items` to allow creating one or more child items per call.
 
 ### 📁 Repositories
+- **repo_review_pull_request**: Review a pull request by casting a vote or updating reviewer status (approve, reject, wait, etc.).
 
 - **repo_list_repos_by_project**: Retrieve a list of repositories for a given project.
 - **repo_list_pull_requests_by_repo**: Retrieve a list of pull requests for a given repository.
@@ -150,9 +151,20 @@ For the best experience, use Visual Studio Code and GitHub Copilot.
 3. Install [Azure CLI](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli?view=azure-cli-latest)
 4. Open VS Code in an empty folder
 
+### 🔑 Personal Access Token (PAT) Authentication
+
+You can use a Personal Access Token (PAT) for authentication instead of Azure CLI. To enable PAT authentication, set the following environment variables before starting the MCP server:
+
+```bash
+AZURE_DEVOPS_AUTH_TYPE = "pat"
+AZURE_DEVOPS_PERSONAL_ACCESS_TOKEN = "<your-pat-token>"
+```
+
+If `AZURE_DEVOPS_AUTH_TYPE` is set to `pat`, the server will use the PAT for authentication. Otherwise, it will use Azure CLI or other Azure Identity credentials.
+
 ### Azure Login
 
-Ensure you are logged in to Azure DevOps via the Azure CLI:
+If you are not using PAT authentication, ensure you are logged in to Azure DevOps via the Azure CLI:
 
 ```sh
 az login
