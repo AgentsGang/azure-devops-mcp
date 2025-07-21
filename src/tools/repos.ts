@@ -109,27 +109,27 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<Acce
   );
   server.tool(
     REPO_TOOLS.review_pull_request,
-    "Review a pull request by casting a vote or updating reviewer status (approve, reject, wait, etc.).",
+    "Review a pull request by casting a vote (approve, reject, wait, etc.).",
     {
       repositoryId: z.string().describe("The repository ID of the pull request's target branch."),
       pullRequestId: z.number().describe("ID of the pull request."),
       reviewerId: z.string().describe("ID of the reviewer."),
-      reviewer: z.object({
-        id: z.string().describe("ID of the reviewer."),
-        vote: z.number().describe("Vote value for pull request review: 10=approved, 5=approved with suggestions, 0=no vote, -5=waiting for author, -10=rejected."),
-        displayName: z.string().optional(),
-        uniqueName: z.string().optional(),
-      }).describe("Reviewer's vote object."),
+      vote: z.number().describe("Vote value for pull request review: 10=approved, 5=approved with suggestions, 0=no vote, -5=waiting for author, -10=rejected."),
       project: z.string().optional().describe("Project ID or project name (optional)"),
     },
-    async ({ reviewer, repositoryId, pullRequestId, reviewerId, project }) => {
+    async ({ repositoryId, pullRequestId, reviewerId, vote,  project }) => {
       const connection = await connectionProvider();
       const gitApi = await connection.getGitApi();
+      const reviewer = {
+        id: reviewerId,
+        vote
+      };
+      // Pass project if needed in future
       const result = await gitApi.createPullRequestReviewer(
         reviewer,
         repositoryId,
         pullRequestId,
-        reviewerId,
+        reviewerId
         project
       );
       return {
