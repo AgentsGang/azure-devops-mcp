@@ -129,7 +129,7 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<Acce
         reviewer,
         repositoryId,
         pullRequestId,
-        reviewerId
+        reviewerId,
         project
       );
       return {
