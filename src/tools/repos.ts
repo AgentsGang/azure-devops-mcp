@@ -113,15 +113,16 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<Acce
     {
       repositoryId: z.string().describe("The repository ID of the pull request's target branch."),
       pullRequestId: z.number().describe("ID of the pull request."),
-      reviewerId: z.string().describe("ID of the reviewer."),
       vote: z.number().describe("Vote value for pull request review: 10=approved, 5=approved with suggestions, 0=no vote, -5=waiting for author, -10=rejected."),
       project: z.string().optional().describe("Project ID or project name (optional)"),
     },
-    async ({ repositoryId, pullRequestId, reviewerId, vote,  project }) => {
+    async ({ repositoryId, pullRequestId, vote,  project }) => {
       const connection = await connectionProvider();
       const gitApi = await connection.getGitApi();
+      const data = await getCurrentUserDetails(tokenProvider, connectionProvider);
+      const userId = data.authenticatedUser.id;
       const reviewer = {
-        id: reviewerId,
+        id: userId,
         vote
       };
       // Pass project if needed in future
@@ -129,7 +130,7 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<Acce
         reviewer,
         repositoryId,
         pullRequestId,
-        reviewerId,
+        userId,
         project
       );
       return {
