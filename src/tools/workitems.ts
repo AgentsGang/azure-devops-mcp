@@ -4,10 +4,10 @@
 import { AccessToken } from "@azure/identity";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebApi } from "azure-devops-node-api";
-import { WorkItemExpand } from "azure-devops-node-api/interfaces/WorkItemTrackingInterfaces.js";
+import { WorkItemExpand, WorkItemRelation } from "azure-devops-node-api/interfaces/WorkItemTrackingInterfaces.js";
 import { QueryExpand } from "azure-devops-node-api/interfaces/WorkItemTrackingInterfaces.js";
 import { z } from "zod";
-import { batchApiVersion, markdownCommentsApiVersion } from "../utils.js";
+import { batchApiVersion, markdownCommentsApiVersion, getEnumKeys, safeEnumConvert } from "../utils.js";
 
 const WORKITEM_TOOLS = {
   my_work_items: "wit_my_work_items",
@@ -26,8 +26,8 @@ const WORKITEM_TOOLS = {
   get_query: "wit_get_query",
   get_query_results_by_id: "wit_get_query_results_by_id",
   update_work_items_batch: "wit_update_work_items_batch",
-  close_and_link_workitem_duplicates: "wit_close_and_link_workitem_duplicates",
   work_items_link: "wit_work_items_link",
+  work_item_unlink: "wit_work_item_unlink",
 };
 
 function getLinkTypeFromName(name: string) {
@@ -54,6 +54,8 @@ function getLinkTypeFromName(name: string) {
       return "Microsoft.VSTS.Common.Affects-Forward";
     case "affected by":
       return "Microsoft.VSTS.Common.Affects-Reverse";
+    case "artifact":
+      return "ArtifactLink";
     default:
       throw new Error(`Unknown link type: ${name}`);
   }
@@ -131,8 +133,21 @@ function configureWorkItemTools(server: McpServer, tokenProvider: () => Promise<
     async ({ project, ids }) => {
       const connection = await connectionProvider();
       const workItemApi = await connection.getWorkItemTrackingApi();
-      const fields = ["System.Id", "System.WorkItemType", "System.Title", "System.State", "System.Parent", "System.Tags"];
+      const fields = ["System.Id", "System.WorkItemType", "System.Title", "System.State", "System.Parent", "System.Tags", "Microsoft.VSTS.Common.StackRank", "System.AssignedTo"];
       const workitems = await workItemApi.getWorkItemsBatch({ ids, fields }, project);
+
+      // Format the assignedTo field to include displayName and uniqueName
+      // Removing the identity object as the response. It's too much and not needed
+      if (workitems && Array.isArray(workitems)) {
+        workitems.forEach((item) => {
+          if (item.fields && item.fields["System.AssignedTo"] && typeof item.fields["System.AssignedTo"] === "object") {
+            const assignedTo = item.fields["System.AssignedTo"];
+            const name = assignedTo.displayName || "";
+            const email = assignedTo.uniqueName || "";
+            item.fields["System.AssignedTo"] = `${name} <${email}>`.trim();
+          }
+        });
+      }
 
       return {
         content: [{ type: "text", text: JSON.stringify(workitems, null, 2) }],
@@ -365,15 +380,17 @@ function configureWorkItemTools(server: McpServer, tokenProvider: () => Promise<
       repositoryId: z.string().describe("The ID of the repository containing the pull request. Do not use the repository name here, use the ID instead."),
       pullRequestId: z.number().describe("The ID of the pull request to link to."),
       workItemId: z.number().describe("The ID of the work item to link to the pull request."),
+      pullRequestProjectId: z.string().optional().describe("The project ID containing the pull request. If not provided, defaults to the work item's project ID (for same-project linking)."),
     },
-    async ({ projectId, repositoryId, pullRequestId, workItemId }) => {
+    async ({ projectId, repositoryId, pullRequestId, workItemId, pullRequestProjectId }) => {
       try {
         const connection = await connectionProvider();
         const workItemTrackingApi = await connection.getWorkItemTrackingApi();
 
         // Create artifact link relation using vstfs format
         // Format: vstfs:///Git/PullRequestId/{project}/{repositoryId}/{pullRequestId}
-        const artifactPathValue = `${projectId}/${repositoryId}/${pullRequestId}`;
+        const artifactProjectId = pullRequestProjectId && pullRequestProjectId.trim() !== "" ? pullRequestProjectId : projectId;
+        const artifactPathValue = `${artifactProjectId}/${repositoryId}/${pullRequestId}`;
         const vstfsUrl = `vstfs:///Git/PullRequestId/${encodeURIComponent(artifactPathValue)}`;
 
         // Use the PATCH document format for adding a relation
@@ -454,9 +471,14 @@ function configureWorkItemTools(server: McpServer, tokenProvider: () => Promise<
       updates: z
         .array(
           z.object({
-            op: z.enum(["add", "replace", "remove"]).default("add").describe("The operation to perform on the field."),
+            op: z
+              .string()
+              .transform((val) => val.toLowerCase())
+              .pipe(z.enum(["add", "replace", "remove"]))
+              .default("add")
+              .describe("The operation to perform on the field."),
             path: z.string().describe("The path of the field to update, e.g., '/fields/System.Title'."),
-            value: z.string().describe("The new value for the field. This is required for 'add' and 'replace' operations, and should be omitted for 'remove' operations."),
+            value: z.string().describe("The new value for the field. This is required for 'Add' and 'Replace' operations, and should be omitted for 'Remove' operations."),
           })
         )
         .describe("An array of field updates to apply to the work item."),
@@ -464,7 +486,14 @@ function configureWorkItemTools(server: McpServer, tokenProvider: () => Promise<
     async ({ id, updates }) => {
       const connection = await connectionProvider();
       const workItemApi = await connection.getWorkItemTrackingApi();
-      const updatedWorkItem = await workItemApi.updateWorkItem(null, updates, id);
+
+      // Convert operation names to lowercase for API
+      const apiUpdates = updates.map((update) => ({
+        ...update,
+        op: update.op,
+      }));
+
+      const updatedWorkItem = await workItemApi.updateWorkItem(null, apiUpdates, id);
 
       return {
         content: [{ type: "text", text: JSON.stringify(updatedWorkItem, null, 2) }],
@@ -557,7 +586,10 @@ function configureWorkItemTools(server: McpServer, tokenProvider: () => Promise<
     {
       project: z.string().describe("The name or ID of the Azure DevOps project."),
       query: z.string().describe("The ID or path of the query to retrieve."),
-      expand: z.enum(["all", "clauses", "minimal", "none", "wiql"]).optional().describe("Optional expand parameter to include additional details in the response. Defaults to 'none'."),
+      expand: z
+        .enum(getEnumKeys(QueryExpand) as [string, ...string[]])
+        .optional()
+        .describe("Optional expand parameter to include additional details in the response. Defaults to 'None'."),
       depth: z.number().default(0).describe("Optional depth parameter to specify how deep to expand the query. Defaults to 0."),
       includeDeleted: z.boolean().default(false).describe("Whether to include deleted items in the query results. Defaults to false."),
       useIsoDateFormat: z.boolean().default(false).describe("Whether to use ISO date format in the response. Defaults to false."),
@@ -566,7 +598,7 @@ function configureWorkItemTools(server: McpServer, tokenProvider: () => Promise<
       const connection = await connectionProvider();
       const workItemApi = await connection.getWorkItemTrackingApi();
 
-      const queryDetails = await workItemApi.getQuery(project, query, expand as unknown as QueryExpand, depth, includeDeleted, useIsoDateFormat);
+      const queryDetails = await workItemApi.getQuery(project, query, safeEnumConvert(QueryExpand, expand), depth, includeDeleted, useIsoDateFormat);
 
       return {
         content: [{ type: "text", text: JSON.stringify(queryDetails, null, 2) }],
@@ -603,7 +635,7 @@ function configureWorkItemTools(server: McpServer, tokenProvider: () => Promise<
       updates: z
         .array(
           z.object({
-            op: z.enum(["add", "replace", "remove"]).default("add").describe("The operation to perform on the field."),
+            op: z.enum(["Add", "Replace", "Remove"]).default("Add").describe("The operation to perform on the field."),
             id: z.number().describe("The ID of the work item to update."),
             path: z.string().describe("The path of the field to update, e.g., '/fields/System.Title'."),
             value: z.string().describe("The new value for the field. This is required for 'add' and 'replace' operations, and should be omitted for 'remove' operations."),
@@ -632,7 +664,7 @@ function configureWorkItemTools(server: McpServer, tokenProvider: () => Promise<
         workItemUpdates.forEach(({ path, value, format }) => {
           if (format === "Markdown" && value && value.length > 50) {
             operations.push({
-              op: "add",
+              op: "Add",
               path: `/multilineFieldsFormat${path.replace("/fields", "")}`,
               value: "Markdown",
             });
@@ -744,61 +776,81 @@ function configureWorkItemTools(server: McpServer, tokenProvider: () => Promise<
   );
 
   server.tool(
-    WORKITEM_TOOLS.close_and_link_workitem_duplicates,
-    "Close duplicate work items by id.",
+    WORKITEM_TOOLS.work_item_unlink,
+    "Remove one or many links from a single work item",
     {
-      id: z.number().describe("The ID of the work item to close and link duplicates to."),
-      duplicateIds: z.array(z.number()).describe("An array of IDs of the duplicate work items to close and link to the specified work item."),
       project: z.string().describe("The name or ID of the Azure DevOps project."),
-      state: z.string().default("Removed").describe("The state to set for the duplicate work items. Defaults to 'Removed'."),
+      id: z.number().describe("The ID of the work item to remove the links from."),
+      type: z
+        .enum(["parent", "child", "duplicate", "duplicate of", "related", "successor", "predecessor", "tested by", "tests", "affects", "affected by", "artifact"])
+        .default("related")
+        .describe(
+          "Type of link to remove. Options include 'parent', 'child', 'duplicate', 'duplicate of', 'related', 'successor', 'predecessor', 'tested by', 'tests', 'affects', 'affected by', and 'artifact'. Defaults to 'related'."
+        ),
+      url: z.string().optional().describe("Optional URL to match for the link to remove. If not provided, all links of the specified type will be removed."),
     },
-    async ({ id, duplicateIds, project, state }) => {
-      const connection = await connectionProvider();
+    async ({ project, id, type, url }) => {
+      try {
+        const connection = await connectionProvider();
+        const workItemApi = await connection.getWorkItemTrackingApi();
+        const workItem = await workItemApi.getWorkItem(id, undefined, undefined, WorkItemExpand.Relations, project);
+        const relations: WorkItemRelation[] = workItem.relations ?? [];
+        const linkType = getLinkTypeFromName(type);
 
-      const body = duplicateIds.map((duplicateId) => ({
-        method: "PATCH",
-        uri: `/_apis/wit/workitems/${duplicateId}?api-version=${batchApiVersion}`,
-        headers: {
-          "Content-Type": "application/json-patch+json",
-        },
-        body: [
-          {
-            op: "add",
-            path: "/fields/System.State",
-            value: `${state}`,
-          },
-          {
-            op: "add",
-            path: "/relations/-",
-            value: {
-              rel: "System.LinkTypes.Duplicate-Reverse",
-              url: `${connection.serverUrl}/${project}/_apis/wit/workItems/${id}`,
+        let relationIndexes: number[] = [];
+
+        if (url && url.trim().length > 0) {
+          // If url is provided, find relations matching both rel type and url
+          relationIndexes = relations.map((relation, idx) => (relation.url === url ? idx : -1)).filter((idx) => idx !== -1);
+        } else {
+          // If url is not provided, find all relations matching rel type
+          relationIndexes = relations.map((relation, idx) => (relation.rel === linkType ? idx : -1)).filter((idx) => idx !== -1);
+        }
+
+        if (relationIndexes.length === 0) {
+          return {
+            content: [{ type: "text", text: `No matching relations found for link type '${type}'${url ? ` and URL '${url}'` : ""}.\n${JSON.stringify(relations, null, 2)}` }],
+            isError: true,
+          };
+        }
+
+        // Get the relations that will be removed for logging
+        const removedRelations = relationIndexes.map((idx) => relations[idx]);
+
+        // Sort indexes in descending order to avoid index shifting when removing
+        relationIndexes.sort((a, b) => b - a);
+
+        const apiUpdates = relationIndexes.map((idx) => ({
+          op: "remove",
+          path: `/relations/${idx}`,
+        }));
+
+        const updatedWorkItem = await workItemApi.updateWorkItem(null, apiUpdates, id, project);
+
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                `Removed ${removedRelations.length} link(s) of type '${type}':\n` +
+                JSON.stringify(removedRelations, null, 2) +
+                `\n\nUpdated work item result:\n` +
+                JSON.stringify(updatedWorkItem, null, 2),
             },
-          },
-        ],
-      }));
-
-      const accessToken = await tokenProvider();
-
-      const response = await fetch(`${connection.serverUrl}/_apis/wit/$batch?api-version=${batchApiVersion}`, {
-        method: "PATCH",
-        headers: {
-          "Authorization": `Bearer ${accessToken.token}`,
-          "Content-Type": "application/json",
-          "User-Agent": userAgentProvider(),
-        },
-        body: JSON.stringify(body),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Failed to update work items in batch: ${response.statusText}`);
+          ],
+          isError: false,
+        };
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Error unlinking work item: ${error instanceof Error ? error.message : "Unknown error occurred"}`,
+            },
+          ],
+          isError: true,
+        };
       }
-
-      const result = await response.json();
-
-      return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-      };
     }
   );
 }

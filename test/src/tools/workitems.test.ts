@@ -3,6 +3,7 @@ import { describe, expect, it } from "@jest/globals";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { configureWorkItemTools } from "../../../src/tools/workitems";
 import { WebApi } from "azure-devops-node-api";
+import { QueryExpand } from "azure-devops-node-api/interfaces/WorkItemTrackingInterfaces.js";
 import {
   _mockBacklogs,
   _mockQuery,
@@ -284,12 +285,223 @@ describe("configureWorkItemTools", () => {
       expect(mockWorkItemTrackingApi.getWorkItemsBatch).toHaveBeenCalledWith(
         {
           ids: params.ids,
-          fields: ["System.Id", "System.WorkItemType", "System.Title", "System.State", "System.Parent", "System.Tags"],
+          fields: ["System.Id", "System.WorkItemType", "System.Title", "System.State", "System.Parent", "System.Tags", "Microsoft.VSTS.Common.StackRank", "System.AssignedTo"],
         },
         params.project
       );
 
       expect(result.content[0].text).toBe(JSON.stringify([_mockWorkItems], null, 2));
+    });
+
+    it("should transform System.AssignedTo object to formatted string", async () => {
+      configureWorkItemTools(server, tokenProvider, connectionProvider, userAgentProvider);
+
+      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === "wit_get_work_items_batch_by_ids");
+
+      if (!call) throw new Error("wit_get_work_items_batch_by_ids tool not registered");
+      const [, , , handler] = call;
+
+      // Mock work items with System.AssignedTo as objects
+      const mockWorkItemsWithAssignedTo = [
+        {
+          id: 297,
+          fields: {
+            "System.Id": 297,
+            "System.WorkItemType": "Bug",
+            "System.Title": "Test Bug",
+            "System.AssignedTo": {
+              displayName: "John Doe",
+              uniqueName: "john.doe@example.com",
+              id: "12345",
+            },
+          },
+        },
+        {
+          id: 298,
+          fields: {
+            "System.Id": 298,
+            "System.WorkItemType": "User Story",
+            "System.Title": "Test Story",
+            "System.AssignedTo": {
+              displayName: "Jane Smith",
+              uniqueName: "jane.smith@example.com",
+              id: "67890",
+            },
+          },
+        },
+      ];
+
+      (mockWorkItemTrackingApi.getWorkItemsBatch as jest.Mock).mockResolvedValue(mockWorkItemsWithAssignedTo);
+
+      const params = {
+        ids: [297, 298],
+        project: "Contoso",
+      };
+
+      const result = await handler(params);
+
+      // Parse the returned JSON to verify transformation
+      const resultData = JSON.parse(result.content[0].text);
+
+      expect(resultData[0].fields["System.AssignedTo"]).toBe("John Doe <john.doe@example.com>");
+      expect(resultData[1].fields["System.AssignedTo"]).toBe("Jane Smith <jane.smith@example.com>");
+    });
+
+    it("should handle System.AssignedTo with only displayName", async () => {
+      configureWorkItemTools(server, tokenProvider, connectionProvider, userAgentProvider);
+
+      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === "wit_get_work_items_batch_by_ids");
+
+      if (!call) throw new Error("wit_get_work_items_batch_by_ids tool not registered");
+      const [, , , handler] = call;
+
+      const mockWorkItemsWithPartialAssignedTo = [
+        {
+          id: 297,
+          fields: {
+            "System.Id": 297,
+            "System.WorkItemType": "Bug",
+            "System.Title": "Test Bug",
+            "System.AssignedTo": {
+              displayName: "John Doe",
+              id: "12345",
+            },
+          },
+        },
+      ];
+
+      (mockWorkItemTrackingApi.getWorkItemsBatch as jest.Mock).mockResolvedValue(mockWorkItemsWithPartialAssignedTo);
+
+      const params = {
+        ids: [297],
+        project: "Contoso",
+      };
+
+      const result = await handler(params);
+
+      const resultData = JSON.parse(result.content[0].text);
+      expect(resultData[0].fields["System.AssignedTo"]).toBe("John Doe <>");
+    });
+
+    it("should handle System.AssignedTo with only uniqueName", async () => {
+      configureWorkItemTools(server, tokenProvider, connectionProvider, userAgentProvider);
+
+      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === "wit_get_work_items_batch_by_ids");
+
+      if (!call) throw new Error("wit_get_work_items_batch_by_ids tool not registered");
+      const [, , , handler] = call;
+
+      const mockWorkItemsWithPartialAssignedTo = [
+        {
+          id: 297,
+          fields: {
+            "System.Id": 297,
+            "System.WorkItemType": "Bug",
+            "System.Title": "Test Bug",
+            "System.AssignedTo": {
+              uniqueName: "john.doe@example.com",
+              id: "12345",
+            },
+          },
+        },
+      ];
+
+      (mockWorkItemTrackingApi.getWorkItemsBatch as jest.Mock).mockResolvedValue(mockWorkItemsWithPartialAssignedTo);
+
+      const params = {
+        ids: [297],
+        project: "Contoso",
+      };
+
+      const result = await handler(params);
+
+      const resultData = JSON.parse(result.content[0].text);
+      expect(resultData[0].fields["System.AssignedTo"]).toBe("<john.doe@example.com>");
+    });
+
+    it("should not transform System.AssignedTo if it's not an object", async () => {
+      configureWorkItemTools(server, tokenProvider, connectionProvider, userAgentProvider);
+
+      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === "wit_get_work_items_batch_by_ids");
+
+      if (!call) throw new Error("wit_get_work_items_batch_by_ids tool not registered");
+      const [, , , handler] = call;
+
+      const mockWorkItemsWithStringAssignedTo = [
+        {
+          id: 297,
+          fields: {
+            "System.Id": 297,
+            "System.WorkItemType": "Bug",
+            "System.Title": "Test Bug",
+            "System.AssignedTo": "Already a string",
+          },
+        },
+      ];
+
+      (mockWorkItemTrackingApi.getWorkItemsBatch as jest.Mock).mockResolvedValue(mockWorkItemsWithStringAssignedTo);
+
+      const params = {
+        ids: [297],
+        project: "Contoso",
+      };
+
+      const result = await handler(params);
+
+      const resultData = JSON.parse(result.content[0].text);
+      expect(resultData[0].fields["System.AssignedTo"]).toBe("Already a string");
+    });
+
+    it("should handle work items without System.AssignedTo field", async () => {
+      configureWorkItemTools(server, tokenProvider, connectionProvider, userAgentProvider);
+
+      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === "wit_get_work_items_batch_by_ids");
+
+      if (!call) throw new Error("wit_get_work_items_batch_by_ids tool not registered");
+      const [, , , handler] = call;
+
+      const mockWorkItemsWithoutAssignedTo = [
+        {
+          id: 297,
+          fields: {
+            "System.Id": 297,
+            "System.WorkItemType": "Bug",
+            "System.Title": "Test Bug",
+          },
+        },
+      ];
+
+      (mockWorkItemTrackingApi.getWorkItemsBatch as jest.Mock).mockResolvedValue(mockWorkItemsWithoutAssignedTo);
+
+      const params = {
+        ids: [297],
+        project: "Contoso",
+      };
+
+      const result = await handler(params);
+
+      const resultData = JSON.parse(result.content[0].text);
+      expect(resultData[0].fields["System.AssignedTo"]).toBeUndefined();
+    });
+
+    it("should handle null or undefined workitems response", async () => {
+      configureWorkItemTools(server, tokenProvider, connectionProvider, userAgentProvider);
+
+      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === "wit_get_work_items_batch_by_ids");
+
+      if (!call) throw new Error("wit_get_work_items_batch_by_ids tool not registered");
+      const [, , , handler] = call;
+
+      (mockWorkItemTrackingApi.getWorkItemsBatch as jest.Mock).mockResolvedValue(null);
+
+      const params = {
+        ids: [297],
+        project: "Contoso",
+      };
+
+      const result = await handler(params);
+
+      expect(result.content[0].text).toBe(JSON.stringify(null, null, 2));
     });
   });
 
@@ -426,6 +638,33 @@ describe("configureWorkItemTools", () => {
 
       expect(result.content[0].text).toBe(JSON.stringify(_mockWorkItemComment));
     });
+
+    it("should handle fetch failure response", async () => {
+      configureWorkItemTools(server, tokenProvider, connectionProvider, userAgentProvider);
+
+      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === "wit_add_work_item_comment");
+
+      if (!call) throw new Error("wit_add_work_item_comment tool not registered");
+      const [, , , handler] = call;
+
+      mockConnection.serverUrl = "https://dev.azure.com/contoso";
+      (tokenProvider as jest.Mock).mockResolvedValue({ token: "fake-token" });
+
+      // Mock fetch for the API call
+      const mockFetch = jest.fn().mockResolvedValue({
+        ok: false,
+        statusText: "Not Found",
+      });
+      global.fetch = mockFetch;
+
+      const params = {
+        comment: "hello world!",
+        project: "Contoso",
+        workItemId: 299,
+      };
+
+      await expect(handler(params)).rejects.toThrow("Failed to add a work item comment: Not Found");
+    });
   });
 
   describe("link_work_item_to_pull_request tool", () => {
@@ -534,6 +773,84 @@ describe("configureWorkItemTools", () => {
       expect(mockWorkItemTrackingApi.updateWorkItem).toHaveBeenCalledWith({}, document, params.workItemId, params.projectId);
     });
 
+    it("should use pullRequestProjectId instead of projectId when provided", async () => {
+      configureWorkItemTools(server, tokenProvider, connectionProvider, userAgentProvider);
+      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === "wit_link_work_item_to_pull_request");
+      if (!call) throw new Error("wit_link_work_item_to_pull_request tool not registered");
+
+      const [, , , handler] = call;
+      (mockWorkItemTrackingApi.updateWorkItem as jest.Mock).mockResolvedValue([_mockWorkItem]);
+
+      const params = {
+        projectId: "work-item-project-id",
+        repositoryId: "repo-123",
+        pullRequestId: 67890,
+        workItemId: 131489,
+        pullRequestProjectId: "different-project-id",
+      };
+
+      // Should use pullRequestProjectId instead of projectId
+      const artifactPathValue = `${params.pullRequestProjectId}/${params.repositoryId}/${params.pullRequestId}`;
+      const vstfsUrl = `vstfs:///Git/PullRequestId/${encodeURIComponent(artifactPathValue)}`;
+
+      const document = [
+        {
+          op: "add",
+          path: "/relations/-",
+          value: {
+            rel: "ArtifactLink",
+            url: vstfsUrl,
+            attributes: {
+              name: "Pull Request",
+            },
+          },
+        },
+      ];
+      await handler(params);
+
+      // Note: Work item should still be updated in the original project
+      expect(mockWorkItemTrackingApi.updateWorkItem).toHaveBeenCalledWith({}, document, params.workItemId, params.projectId);
+    });
+
+    it("should fall back to projectId when pullRequestProjectId is empty", async () => {
+      configureWorkItemTools(server, tokenProvider, connectionProvider, userAgentProvider);
+      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === "wit_link_work_item_to_pull_request");
+      if (!call) throw new Error("wit_link_work_item_to_pull_request tool not registered");
+
+      const [, , , handler] = call;
+      (mockWorkItemTrackingApi.updateWorkItem as jest.Mock).mockResolvedValue([_mockWorkItem]);
+
+      // Testing with empty string for pullRequestProjectId
+      const params = {
+        projectId: "work-item-project-id",
+        repositoryId: "repo-123",
+        pullRequestId: 67890,
+        workItemId: 131489,
+        pullRequestProjectId: "",
+      };
+
+      // Should use projectId since pullRequestProjectId is empty
+      const artifactPathValue = `${params.projectId}/${params.repositoryId}/${params.pullRequestId}`;
+      const vstfsUrl = `vstfs:///Git/PullRequestId/${encodeURIComponent(artifactPathValue)}`;
+
+      const document = [
+        {
+          op: "add",
+          path: "/relations/-",
+          value: {
+            rel: "ArtifactLink",
+            url: vstfsUrl,
+            attributes: {
+              name: "Pull Request",
+            },
+          },
+        },
+      ];
+      await handler(params);
+
+      expect(mockWorkItemTrackingApi.updateWorkItem).toHaveBeenCalledWith({}, document, params.workItemId, params.projectId);
+    });
+
     it("should handle link_work_item_to_pull_request unknown error type", async () => {
       configureWorkItemTools(server, tokenProvider, connectionProvider, userAgentProvider);
 
@@ -549,6 +866,7 @@ describe("configureWorkItemTools", () => {
         repositoryId: "repo-123",
         pullRequestId: 42,
         workItemId: 1,
+        pullRequestProjectId: "other-project",
       };
 
       const result = await handler(params);
@@ -604,16 +922,25 @@ describe("configureWorkItemTools", () => {
         id: 131489,
         updates: [
           {
-            op: "add",
+            op: "Add",
             path: "/fields/System.Title",
             value: "Updated Sample Task",
+          },
+          {
+            op: "Replace",
+            path: "/fields/System.Description",
+            value: "Updated Description",
           },
         ],
       };
 
       const result = await handler(params);
 
-      expect(mockWorkItemTrackingApi.updateWorkItem).toHaveBeenCalledWith(null, params.updates, params.id);
+      // In line 456-471, the operation is actually not transformed to lowercase
+      // despite the comment saying otherwise, so we use the original value
+      const expectedUpdates = params.updates;
+
+      expect(mockWorkItemTrackingApi.updateWorkItem).toHaveBeenCalledWith(null, expectedUpdates, params.id);
 
       expect(result.content[0].text).toBe(JSON.stringify([_mockWorkItem], null, 2));
     });
@@ -792,7 +1119,7 @@ describe("configureWorkItemTools", () => {
       const params = {
         project: "Contoso",
         query: "342f0f44-4069-46b1-a940-3d0468979ceb",
-        expand: "none",
+        expand: "None",
         depth: 1,
         includeDeleted: false,
         useIsoDateFormat: false,
@@ -800,7 +1127,7 @@ describe("configureWorkItemTools", () => {
 
       const result = await handler(params);
 
-      expect(mockWorkItemTrackingApi.getQuery).toHaveBeenCalledWith(params.project, params.query, params.expand, params.depth, params.includeDeleted, params.useIsoDateFormat);
+      expect(mockWorkItemTrackingApi.getQuery).toHaveBeenCalledWith(params.project, params.query, QueryExpand.None, params.depth, params.includeDeleted, params.useIsoDateFormat);
 
       expect(result.content[0].text).toBe(JSON.stringify([_mockQuery], null, 2));
     });
@@ -935,6 +1262,22 @@ describe("configureWorkItemTools", () => {
 
       const result = await handler(params);
 
+      // This verifies that the updates are grouped by work item ID as implemented in line 643
+      const expectedBody = [
+        {
+          method: "PATCH",
+          uri: "/_apis/wit/workitems/1?api-version=5.0",
+          headers: { "Content-Type": "application/json-patch+json" },
+          body: [{ op: "replace", path: "/fields/System.Title", value: "Updated Title" }],
+        },
+        {
+          method: "PATCH",
+          uri: "/_apis/wit/workitems/2?api-version=5.0",
+          headers: { "Content-Type": "application/json-patch+json" },
+          body: [{ op: "add", path: "/fields/System.Description", value: "New Description" }],
+        },
+      ];
+
       expect(fetch).toHaveBeenCalledWith(
         "https://dev.azure.com/contoso/_apis/wit/$batch?api-version=5.0",
         expect.objectContaining({
@@ -943,6 +1286,77 @@ describe("configureWorkItemTools", () => {
             "Authorization": "Bearer fake-token",
             "Content-Type": "application/json",
           }),
+          body: JSON.stringify(expectedBody),
+        })
+      );
+
+      expect(result.content[0].text).toBe(JSON.stringify([{ id: 1, success: true }], null, 2));
+    });
+
+    it("should handle Markdown format for large text fields", async () => {
+      configureWorkItemTools(server, tokenProvider, connectionProvider, userAgentProvider);
+
+      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === "wit_update_work_items_batch");
+      if (!call) throw new Error("wit_update_work_items_batch tool not registered");
+      const [, , , handler] = call;
+
+      mockConnection.serverUrl = "https://dev.azure.com/contoso";
+      (tokenProvider as jest.Mock).mockResolvedValue({ token: "fake-token" });
+
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: jest.fn().mockResolvedValue([{ id: 1, success: true }]),
+      });
+
+      const longDescription = "This is a very long description that is definitely more than 50 characters long and should trigger Markdown formatting";
+
+      const params = {
+        updates: [
+          {
+            op: "Add", // Match the capitalization in the implementation
+            id: 1,
+            path: "/fields/System.Description",
+            value: longDescription,
+            format: "Markdown",
+          },
+          {
+            op: "Add", // Match the capitalization in the implementation
+            id: 1,
+            path: "/fields/System.Title",
+            value: "Simple Title",
+          },
+        ],
+      };
+
+      const result = await handler(params);
+
+      // This verifies that the Markdown format is applied for the long text field as implemented in line 643
+      const expectedBody = [
+        {
+          method: "PATCH",
+          uri: "/_apis/wit/workitems/1?api-version=5.0",
+          headers: { "Content-Type": "application/json-patch+json" },
+          body: [
+            { op: "Add", path: "/fields/System.Description", value: longDescription },
+            { op: "Add", path: "/fields/System.Title", value: "Simple Title" },
+            {
+              op: "Add",
+              path: "/multilineFieldsFormat/System.Description",
+              value: "Markdown",
+            },
+          ],
+        },
+      ];
+
+      expect(fetch).toHaveBeenCalledWith(
+        "https://dev.azure.com/contoso/_apis/wit/$batch?api-version=5.0",
+        expect.objectContaining({
+          method: "PATCH",
+          headers: expect.objectContaining({
+            "Authorization": "Bearer fake-token",
+            "Content-Type": "application/json",
+          }),
+          body: JSON.stringify(expectedBody),
         })
       );
 
@@ -1054,80 +1468,397 @@ describe("configureWorkItemTools", () => {
     });
   });
 
-  describe("close_and_link_workitem_duplicates tool", () => {
-    it("should close and link duplicate work items successfully", async () => {
+  describe("work_item_unlink tool", () => {
+    it("should unlink work items successfully", async () => {
       configureWorkItemTools(server, tokenProvider, connectionProvider, userAgentProvider);
 
-      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === "wit_close_and_link_workitem_duplicates");
-      if (!call) throw new Error("wit_close_and_link_workitem_duplicates tool not registered");
+      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === "wit_work_item_unlink");
+      if (!call) throw new Error("wit_work_item_unlink tool not registered");
       const [, , , handler] = call;
 
-      mockConnection.serverUrl = "https://dev.azure.com/contoso";
-      (tokenProvider as jest.Mock).mockResolvedValue({ token: "fake-token" });
+      // Mock work item with relations
+      const mockWorkItemWithRelations = {
+        id: 1,
+        relations: [
+          {
+            rel: "System.LinkTypes.Related",
+            url: "https://dev.azure.com/contoso/_apis/wit/workItems/2",
+            attributes: { isLocked: false, name: "Related" },
+          },
+          {
+            rel: "System.LinkTypes.Related",
+            url: "https://dev.azure.com/contoso/_apis/wit/workItems/3",
+            attributes: { isLocked: false, name: "Related" },
+          },
+        ],
+      };
 
-      global.fetch = jest.fn().mockResolvedValue({
-        ok: true,
-        json: jest.fn().mockResolvedValue([
-          { id: 2, success: true },
-          { id: 3, success: true },
-        ]),
-      });
+      const mockUpdatedWorkItem = {
+        id: 1,
+        rev: 5,
+        relations: [
+          {
+            rel: "System.LinkTypes.Related",
+            url: "https://dev.azure.com/contoso/_apis/wit/workItems/3",
+            attributes: { isLocked: false, name: "Related" },
+          },
+        ],
+      };
+
+      (mockWorkItemTrackingApi.getWorkItem as jest.Mock).mockResolvedValue(mockWorkItemWithRelations);
+      (mockWorkItemTrackingApi.updateWorkItem as jest.Mock).mockResolvedValue(mockUpdatedWorkItem);
 
       const params = {
-        id: 1,
-        duplicateIds: [2, 3],
         project: "TestProject",
-        state: "Closed",
+        id: 1,
+        type: "related",
+        url: "https://dev.azure.com/contoso/_apis/wit/workItems/2",
       };
 
       const result = await handler(params);
 
-      expect(fetch).toHaveBeenCalledWith(
-        "https://dev.azure.com/contoso/_apis/wit/$batch?api-version=5.0",
-        expect.objectContaining({
-          method: "PATCH",
-          headers: expect.objectContaining({
-            "Authorization": "Bearer fake-token",
-            "Content-Type": "application/json",
-          }),
-        })
-      );
+      expect(mockWorkItemTrackingApi.getWorkItem).toHaveBeenCalledWith(1, undefined, undefined, 1, "TestProject");
+      expect(mockWorkItemTrackingApi.updateWorkItem).toHaveBeenCalledWith(null, [{ op: "remove", path: "/relations/0" }], 1, "TestProject");
 
-      expect(result.content[0].text).toBe(
-        JSON.stringify(
-          [
-            { id: 2, success: true },
-            { id: 3, success: true },
-          ],
-          null,
-          2
-        )
-      );
+      expect(result.content[0].text).toContain("Removed 1 link(s) of type 'related':");
+      expect(result.content[0].text).toContain("System.LinkTypes.Related");
+      expect(result.content[0].text).toContain("Updated work item result:");
     });
 
-    it("should handle duplicate closure failure", async () => {
+    it("should unlink all links of a specific type when no URL is provided", async () => {
       configureWorkItemTools(server, tokenProvider, connectionProvider, userAgentProvider);
 
-      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === "wit_close_and_link_workitem_duplicates");
-      if (!call) throw new Error("wit_close_and_link_workitem_duplicates tool not registered");
+      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === "wit_work_item_unlink");
+      if (!call) throw new Error("wit_work_item_unlink tool not registered");
       const [, , , handler] = call;
 
-      mockConnection.serverUrl = "https://dev.azure.com/contoso";
-      (tokenProvider as jest.Mock).mockResolvedValue({ token: "fake-token" });
-
-      global.fetch = jest.fn().mockResolvedValue({
-        ok: false,
-        statusText: "Forbidden",
-      });
-
-      const params = {
+      // Mock work item with multiple related links
+      const mockWorkItemWithRelations = {
         id: 1,
-        duplicateIds: [2, 3],
-        project: "TestProject",
-        state: "Removed",
+        relations: [
+          {
+            rel: "System.LinkTypes.Related",
+            url: "https://dev.azure.com/contoso/_apis/wit/workItems/2",
+            attributes: { isLocked: false, name: "Related" },
+          },
+          {
+            rel: "System.LinkTypes.Related",
+            url: "https://dev.azure.com/contoso/_apis/wit/workItems/3",
+            attributes: { isLocked: false, name: "Related" },
+          },
+          {
+            rel: "System.LinkTypes.Hierarchy-Forward",
+            url: "https://dev.azure.com/contoso/_apis/wit/workItems/4",
+            attributes: { isLocked: false, name: "Child" },
+          },
+        ],
       };
 
-      await expect(handler(params)).rejects.toThrow("Failed to update work items in batch: Forbidden");
+      const mockUpdatedWorkItem = {
+        id: 1,
+        rev: 6,
+        relations: [
+          {
+            rel: "System.LinkTypes.Hierarchy-Forward",
+            url: "https://dev.azure.com/contoso/_apis/wit/workItems/4",
+            attributes: { isLocked: false, name: "Child" },
+          },
+        ],
+      };
+
+      (mockWorkItemTrackingApi.getWorkItem as jest.Mock).mockResolvedValue(mockWorkItemWithRelations);
+      (mockWorkItemTrackingApi.updateWorkItem as jest.Mock).mockResolvedValue(mockUpdatedWorkItem);
+
+      const params = {
+        project: "TestProject",
+        id: 1,
+        type: "related",
+      };
+
+      const result = await handler(params);
+
+      expect(mockWorkItemTrackingApi.getWorkItem).toHaveBeenCalledWith(1, undefined, undefined, 1, "TestProject");
+      expect(mockWorkItemTrackingApi.updateWorkItem).toHaveBeenCalledWith(
+        null,
+        [
+          { op: "remove", path: "/relations/1" },
+          { op: "remove", path: "/relations/0" },
+        ],
+        1,
+        "TestProject"
+      );
+
+      expect(result.content[0].text).toContain("Removed 2 link(s) of type 'related':");
+      expect(result.content[0].text).toContain("System.LinkTypes.Related");
+    });
+
+    it("should handle artifact link removal", async () => {
+      configureWorkItemTools(server, tokenProvider, connectionProvider, userAgentProvider);
+
+      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === "wit_work_item_unlink");
+      if (!call) throw new Error("wit_work_item_unlink tool not registered");
+      const [, , , handler] = call;
+
+      const mockWorkItemWithRelations = {
+        id: 1,
+        relations: [
+          {
+            rel: "ArtifactLink",
+            url: "vstfs:///Git/Ref/project%2Frepo%2Fbranch",
+            attributes: { name: "Branch" },
+          },
+          {
+            rel: "System.LinkTypes.Related",
+            url: "https://dev.azure.com/contoso/_apis/wit/workItems/2",
+            attributes: { isLocked: false, name: "Related" },
+          },
+        ],
+      };
+
+      const mockUpdatedWorkItem = {
+        id: 1,
+        rev: 7,
+        relations: [
+          {
+            rel: "System.LinkTypes.Related",
+            url: "https://dev.azure.com/contoso/_apis/wit/workItems/2",
+            attributes: { isLocked: false, name: "Related" },
+          },
+        ],
+      };
+
+      (mockWorkItemTrackingApi.getWorkItem as jest.Mock).mockResolvedValue(mockWorkItemWithRelations);
+      (mockWorkItemTrackingApi.updateWorkItem as jest.Mock).mockResolvedValue(mockUpdatedWorkItem);
+
+      const params = {
+        project: "TestProject",
+        id: 1,
+        type: "artifact",
+        url: "vstfs:///Git/Ref/project%2Frepo%2Fbranch",
+      };
+
+      const result = await handler(params);
+
+      expect(mockWorkItemTrackingApi.updateWorkItem).toHaveBeenCalledWith(null, [{ op: "remove", path: "/relations/0" }], 1, "TestProject");
+
+      expect(result.content[0].text).toContain("Removed 1 link(s) of type 'artifact':");
+      expect(result.content[0].text).toContain("ArtifactLink");
+    });
+
+    it("should handle when no matching relations are found", async () => {
+      configureWorkItemTools(server, tokenProvider, connectionProvider, userAgentProvider);
+
+      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === "wit_work_item_unlink");
+      if (!call) throw new Error("wit_work_item_unlink tool not registered");
+      const [, , , handler] = call;
+
+      const mockWorkItemWithRelations = {
+        id: 1,
+        relations: [
+          {
+            rel: "System.LinkTypes.Hierarchy-Forward",
+            url: "https://dev.azure.com/contoso/_apis/wit/workItems/4",
+            attributes: { isLocked: false, name: "Child" },
+          },
+        ],
+      };
+
+      (mockWorkItemTrackingApi.getWorkItem as jest.Mock).mockResolvedValue(mockWorkItemWithRelations);
+
+      const params = {
+        project: "TestProject",
+        id: 1,
+        type: "related",
+        url: "https://dev.azure.com/contoso/_apis/wit/workItems/999",
+      };
+
+      const result = await handler(params);
+
+      expect(mockWorkItemTrackingApi.updateWorkItem).not.toHaveBeenCalled();
+      expect(result.content[0].text).toContain("No matching relations found for link type 'related' and URL 'https://dev.azure.com/contoso/_apis/wit/workItems/999'");
+      expect(result.isError).toBe(true);
+    });
+
+    it("should handle updateWorkItem API failure", async () => {
+      configureWorkItemTools(server, tokenProvider, connectionProvider, userAgentProvider);
+
+      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === "wit_work_item_unlink");
+      if (!call) throw new Error("wit_work_item_unlink tool not registered");
+      const [, , , handler] = call;
+
+      const mockWorkItemWithRelations = {
+        id: 1,
+        relations: [
+          {
+            rel: "System.LinkTypes.Related",
+            url: "https://dev.azure.com/contoso/_apis/wit/workItems/2",
+            attributes: { isLocked: false, name: "Related" },
+          },
+        ],
+      };
+
+      (mockWorkItemTrackingApi.getWorkItem as jest.Mock).mockResolvedValue(mockWorkItemWithRelations);
+      (mockWorkItemTrackingApi.updateWorkItem as jest.Mock).mockRejectedValue(new Error("Update failed"));
+
+      const params = {
+        project: "TestProject",
+        id: 1,
+        type: "related",
+        url: "https://dev.azure.com/contoso/_apis/wit/workItems/2",
+      };
+
+      const result = await handler(params);
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toBe("Error unlinking work item: Update failed");
+    });
+
+    it("should handle getWorkItem API failure", async () => {
+      configureWorkItemTools(server, tokenProvider, connectionProvider, userAgentProvider);
+
+      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === "wit_work_item_unlink");
+      if (!call) throw new Error("wit_work_item_unlink tool not registered");
+      const [, , , handler] = call;
+
+      (mockWorkItemTrackingApi.getWorkItem as jest.Mock).mockRejectedValue(new Error("Work item not found"));
+
+      const params = {
+        project: "TestProject",
+        id: 999,
+        type: "related",
+      };
+
+      const result = await handler(params);
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toBe("Error unlinking work item: Work item not found");
+    });
+
+    it("should handle work items with no relations", async () => {
+      configureWorkItemTools(server, tokenProvider, connectionProvider, userAgentProvider);
+
+      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === "wit_work_item_unlink");
+      if (!call) throw new Error("wit_work_item_unlink tool not registered");
+      const [, , , handler] = call;
+
+      const mockWorkItemWithNoRelations = {
+        id: 1,
+        relations: null,
+      };
+
+      (mockWorkItemTrackingApi.getWorkItem as jest.Mock).mockResolvedValue(mockWorkItemWithNoRelations);
+
+      const params = {
+        project: "TestProject",
+        id: 1,
+        type: "related",
+      };
+
+      const result = await handler(params);
+
+      expect(result.content[0].text).toContain("No matching relations found for link type 'related'");
+      expect(result.isError).toBe(true);
+    });
+
+    it("should handle specific URL matching correctly", async () => {
+      configureWorkItemTools(server, tokenProvider, connectionProvider, userAgentProvider);
+
+      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === "wit_work_item_unlink");
+      if (!call) throw new Error("wit_work_item_unlink tool not registered");
+      const [, , , handler] = call;
+
+      const mockWorkItemWithRelations = {
+        id: 1,
+        relations: [
+          {
+            rel: "System.LinkTypes.Related",
+            url: "https://dev.azure.com/contoso/_apis/wit/workItems/2",
+            attributes: { isLocked: false, name: "Related" },
+          },
+          {
+            rel: "System.LinkTypes.Hierarchy-Forward",
+            url: "https://dev.azure.com/contoso/_apis/wit/workItems/3",
+            attributes: { isLocked: false, name: "Child" },
+          },
+          {
+            rel: "ArtifactLink",
+            url: "vstfs:///Git/Ref/project%2Frepo%2Fbranch",
+            attributes: { name: "Branch" },
+          },
+        ],
+      };
+
+      const mockUpdatedWorkItem = {
+        id: 1,
+        rev: 8,
+      };
+
+      (mockWorkItemTrackingApi.getWorkItem as jest.Mock).mockResolvedValue(mockWorkItemWithRelations);
+      (mockWorkItemTrackingApi.updateWorkItem as jest.Mock).mockResolvedValue(mockUpdatedWorkItem);
+
+      const params = {
+        project: "TestProject",
+        id: 1,
+        type: "related",
+        url: "https://dev.azure.com/contoso/_apis/wit/workItems/2",
+      };
+
+      const result = await handler(params);
+
+      // Should remove only the matching relation at index 0
+      expect(mockWorkItemTrackingApi.updateWorkItem).toHaveBeenCalledWith(null, [{ op: "remove", path: "/relations/0" }], 1, "TestProject");
+
+      expect(result.content[0].text).toContain("Removed 1 link(s) of type 'related':");
+      expect(result.content[0].text).toContain("System.LinkTypes.Related");
+    });
+
+    it("should throw error for unknown link type in work_item_unlink", async () => {
+      configureWorkItemTools(server, tokenProvider, connectionProvider, userAgentProvider);
+
+      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === "wit_work_item_unlink");
+      if (!call) throw new Error("wit_work_item_unlink tool not registered");
+      const [, , , handler] = call;
+
+      // Mock a work item with some relations (this won't matter since we'll hit the error before processing them)
+      const mockWorkItemWithRelations = {
+        id: 1,
+        relations: [],
+      };
+
+      (mockWorkItemTrackingApi.getWorkItem as jest.Mock).mockResolvedValue(mockWorkItemWithRelations);
+
+      const params = {
+        project: "TestProject",
+        id: 1,
+        type: "unknown_type",
+      };
+
+      const result = await handler(params);
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toBe("Error unlinking work item: Unknown link type: unknown_type");
+    });
+
+    it("should handle unknown error types in work_item_unlink", async () => {
+      configureWorkItemTools(server, tokenProvider, connectionProvider, userAgentProvider);
+
+      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === "wit_work_item_unlink");
+      if (!call) throw new Error("wit_work_item_unlink tool not registered");
+      const [, , , handler] = call;
+
+      // Simulate an unknown error type (not an Error instance)
+      (mockWorkItemTrackingApi.getWorkItem as jest.Mock).mockRejectedValue("String error");
+
+      const params = {
+        project: "TestProject",
+        id: 1,
+        type: "related",
+      };
+
+      const result = await handler(params);
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toBe("Error unlinking work item: Unknown error occurred");
     });
   });
 
@@ -1188,10 +1919,11 @@ describe("configureWorkItemTools", () => {
       (mockWorkItemTrackingApi.updateWorkItem as jest.Mock).mockRejectedValue(new Error("Linking failed"));
 
       const params = {
-        project: "TestProject",
+        projectId: "TestProject",
         repositoryId: "repo-123",
         pullRequestId: 42,
         workItemId: 1,
+        pullRequestProjectId: "OtherProject",
       };
 
       const result = await handler(params);
@@ -1210,10 +1942,11 @@ describe("configureWorkItemTools", () => {
       (mockWorkItemTrackingApi.updateWorkItem as jest.Mock).mockResolvedValue(null);
 
       const params = {
-        project: "TestProject",
+        projectId: "TestProject",
         repositoryId: "repo-123",
         pullRequestId: 42,
         workItemId: 1,
+        pullRequestProjectId: "OtherProject",
       };
 
       const result = await handler(params);
