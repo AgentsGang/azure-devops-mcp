@@ -81,7 +81,7 @@ Interact with these Azure DevOps services:
 - **wit_close_and_link_workitem_duplicates**: This tool is no longer needed. Finding and marking duplicates can be done with other tools.
 
 ### 📁 Repositories
-- **repo_review_pull_request**: Review a pull request by casting a vote or updating reviewer status (approve, reject, wait, etc.).
+- **submit_pull_request_vote**: Submit your final reviewer vote on a pull request (approve, reject, wait, etc.).
 
 - **repo_list_repos_by_project**: Retrieve a list of repositories for a given project.
 - **repo_list_pull_requests_by_repo**: Retrieve a list of pull requests for a given repository.

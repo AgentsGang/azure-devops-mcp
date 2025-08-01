@@ -36,11 +36,11 @@ describe("repos tools", () => {
     });
   });
 
-  describe('repo_review_pull_request handler', () => {
+  describe('submit_pull_request_vote handler', () => {
     it('calls createPullRequestReviewer with correct arguments and returns expected result', async () => {
       configureRepoTools(server, tokenProvider, connectionProvider);
 
-      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === 'repo_review_pull_request');
+      const call = (server.tool as jest.Mock).mock.calls.find(([toolName]) => toolName === 'repo_submit_pull_request_vote');
       expect(call).toBeDefined();
       const [, , , handler] = call;
 

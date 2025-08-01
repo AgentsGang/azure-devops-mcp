@@ -1,6 +1,6 @@
 {
   "name": "@agentsgang/azure-devops-mcp",
-  "version": "1.0.3",
+  "version": "1.0.5",
   "description": "MCP server for interacting with Azure DevOps",
   "license": "MIT",
   "author": "Microsoft Corporation",
@@ -39,9 +39,11 @@
   "dependencies": {
     "@azure/identity": "^4.10.0",
     "@modelcontextprotocol/sdk": "1.17.0",
+    "@types/diff": "^7.0.2",
     "azure-devops-extension-api": "^4.252.0",
     "azure-devops-extension-sdk": "^4.0.2",
     "azure-devops-node-api": "^15.1.0",
+    "diff": "^8.0.2",
     "yargs": "^18.0.0",
     "zod": "^3.25.63",
     "zod-to-json-schema": "^3.24.5"

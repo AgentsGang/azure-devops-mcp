@@ -19,6 +19,7 @@ import {
 } from "azure-devops-node-api/interfaces/GitInterfaces.js";
 import { z } from "zod";
 import { GitRepository } from "azure-devops-node-api/interfaces/TfvcInterfaces.js";
+import { diffLines } from "diff";
 import { getCurrentUserDetails } from "./auth.js";
 import { getEnumKeys } from "../utils.js";
 
@@ -41,7 +42,7 @@ const REPO_TOOLS = {
   resolve_comment: "repo_resolve_comment",
   search_commits: "repo_search_commits",
   list_pull_requests_by_commits: "repo_list_pull_requests_by_commits",
-  review_pull_request: "repo_review_pull_request",
+  submit_pull_request_vote: "repo_submit_pull_request_vote",
   read_pull_request_file_diffs: "repo_read_pull_request_file_diffs"
 };
 
@@ -59,20 +60,27 @@ function branchesFilterOutIrrelevantProperties(branches: GitRef[], top: number) 
  * @param comments Array of comments to trim (can be undefined/null)
  * @returns Array of trimmed comment objects with essential properties only
  */
-function trimComments(comments: any[] | undefined | null) {
+function trimComments(comments: unknown[] | undefined | null) {
   return comments
-    ?.filter((comment) => !comment.isDeleted) // Exclude deleted comments
-    ?.map((comment) => ({
-      id: comment.id,
-      author: {
-        displayName: comment.author?.displayName,
-        uniqueName: comment.author?.uniqueName,
-      },
-      content: comment.content,
-      publishedDate: comment.publishedDate,
-      lastUpdatedDate: comment.lastUpdatedDate,
-      lastContentUpdatedDate: comment.lastContentUpdatedDate,
-    }));
+    ?.filter((comment) => {
+      const c = comment as Record<string, unknown>;
+      return !c.isDeleted;
+    }) // Exclude deleted comments
+    ?.map((comment) => {
+      const c = comment as Record<string, unknown>;
+      const author = c.author as Record<string, unknown> | undefined;
+      return {
+        id: c.id,
+        author: {
+          displayName: author?.displayName,
+          uniqueName: author?.uniqueName,
+        },
+        content: c.content,
+        publishedDate: c.publishedDate,
+        lastUpdatedDate: c.lastUpdatedDate,
+        lastContentUpdatedDate: c.lastContentUpdatedDate,
+      };
+    });
 }
 
 function pullRequestStatusStringToInt(status: string): number {
@@ -129,23 +137,23 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<Acce
       // Paginate
       const paginatedChanges = changes.slice(skip, skip + top);
 
-      // Helper to format context
-      function extractContext(lines: string[], start: number, end: number, context = 50) {
+      // Helper to format context with line numbers
+      function extractContext(lines: string[], start: number, end: number, context = 5, startLineNumber = 1) {
         const beforeStart = Math.max(0, start - context);
         const afterEnd = Math.min(lines.length, end + context);
-        return {
-          before: lines.slice(beforeStart, start).join("\n"),
-          changed: lines.slice(start, end).join("\n"),
-          after: lines.slice(end, afterEnd).join("\n"),
+        
+        const formatLinesWithNumbers = (lineSlice: string[], startNum: number) => {
+          return lineSlice.map((line, index) => {
+            const lineNum = startNum + index;
+            return `${lineNum.toString().padStart(4)}: ${line}`;
+          }).join("\n");
         };
-      }
 
-      // Use diff library for line-by-line diff
-      let diffLib;
-      try {
-        diffLib = require("diff");
-      } catch (e) {
-        diffLib = null;
+        return {
+          before: formatLinesWithNumbers(lines.slice(beforeStart, start), startLineNumber + beforeStart),
+          changed: formatLinesWithNumbers(lines.slice(start, end), startLineNumber + start),
+          after: formatLinesWithNumbers(lines.slice(end, afterEnd), startLineNumber + end),
+        };
       }
 
       // Format Markdown output
@@ -168,22 +176,49 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<Acce
               const prevChange = prevChangesResult?.changeEntries?.find(c => c.item?.path === change.item?.path);
               if (prevChange && prevChange.item?.objectId) {
                 const prevItem = await gitApi.getItemContent(repositoryId, change.item.path, prevChange.item.objectId);
-                beforeContent = prevItem?.toString() || "";
+                // Convert buffer/object to string properly
+                if (prevItem) {
+                  if (Buffer.isBuffer(prevItem)) {
+                    beforeContent = prevItem.toString('utf8');
+                  } else if (typeof prevItem === 'string') {
+                    beforeContent = prevItem;
+                  } else {
+                    beforeContent = String(prevItem);
+                  }
+                }
               }
             }
             // After content
             const afterItem = await gitApi.getItemContent(repositoryId, change.item.path, change.item.objectId);
-            afterContent = afterItem?.toString() || "";
-          } catch (e) {
+            // Convert buffer/object to string properly
+            if (afterItem) {
+              if (Buffer.isBuffer(afterItem)) {
+                afterContent = afterItem.toString('utf8');
+              } else if (typeof afterItem === 'string') {
+                afterContent = afterItem;
+              } else {
+                afterContent = String(afterItem);
+              }
+            }
+          } catch (error) {
             // Ignore content errors, just skip diff
+            markdown += `*Could not retrieve file content: ${error instanceof Error ? error.message : 'Unknown error'}*\n\n`;
+            continue;
           }
           // Split into lines
           const beforeLines = beforeContent.split("\n");
           const afterLines = afterContent.split("\n");
-          let diffRegions = [];
-          if (diffLib) {
+          const diffRegions: {
+            type: string;
+            beforeStart: number;
+            beforeEnd: number;
+            afterStart: number;
+            afterEnd: number;
+          }[] = [];
+          
+          if (true) {
             // Use diff library to get changed regions
-            const changesArr = diffLib.diffLines(beforeContent, afterContent);
+            const changesArr = diffLines(beforeContent, afterContent);
             let beforeIdx = 0, afterIdx = 0;
             for (const part of changesArr) {
               if (part.added) {
@@ -213,23 +248,49 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<Acce
               }
             }
           }
+          
           if (diffRegions.length === 0) {
-            // No diff regions, just show first/last 50 lines
-            markdown += `### Before (first 50 lines)\n\n`;
-            markdown += "```diff\n" + beforeLines.slice(0, 50).join("\n") + "\n```\n";
-            markdown += `\n### After (first 50 lines)\n\n`;
-            markdown += "```diff\n" + afterLines.slice(0, 50).join("\n") + "\n```\n";
+            // No diff regions, just show first/last lines with line numbers
+            const maxLines = 50;
+            if (beforeLines.length > 0) {
+              markdown += `### Before (first ${Math.min(maxLines, beforeLines.length)} lines)\n\n`;
+              const beforeFormatted = beforeLines.slice(0, maxLines).map((line, index) => 
+                `${(index + 1).toString().padStart(4)}: ${line}`
+              ).join("\n");
+              markdown += "```diff\n" + beforeFormatted + "\n```\n";
+            }
+            
+            if (afterLines.length > 0) {
+              markdown += `\n### After (first ${Math.min(maxLines, afterLines.length)} lines)\n\n`;
+              const afterFormatted = afterLines.slice(0, maxLines).map((line, index) => 
+                `${(index + 1).toString().padStart(4)}: ${line}`
+              ).join("\n");
+              markdown += "```diff\n" + afterFormatted + "\n```\n";
+            }
           } else {
             for (const region of diffRegions) {
-              markdown += `### Diff Region (${region.type})\n\n`;
+              markdown += `### Diff Region (${region.type}) - Lines ${region.beforeStart + 1}-${region.beforeEnd} → ${region.afterStart + 1}-${region.afterEnd}\n\n`;
               // Before context
-              const beforeCtx = extractContext(beforeLines, region.beforeStart, region.beforeEnd, 50);
-              markdown += `**Before Context:**\n\n`;
-              markdown += "```diff\n" + beforeCtx.before + "\n" + beforeCtx.changed + "\n" + beforeCtx.after + "\n```\n";
+              const beforeCtx = extractContext(beforeLines, region.beforeStart, region.beforeEnd, 5, 1);
+              if (beforeCtx.before || beforeCtx.changed || beforeCtx.after) {
+                markdown += `**Before:**\n\n`;
+                markdown += "```diff\n";
+                if (beforeCtx.before) markdown += beforeCtx.before + "\n";
+                if (beforeCtx.changed) markdown += beforeCtx.changed + "\n";
+                if (beforeCtx.after) markdown += beforeCtx.after + "\n";
+                markdown += "```\n";
+              }
+              
               // After context
-              const afterCtx = extractContext(afterLines, region.afterStart, region.afterEnd, 50);
-              markdown += `\n**After Context:**\n\n`;
-              markdown += "```diff\n" + afterCtx.before + "\n" + afterCtx.changed + "\n" + afterCtx.after + "\n```\n";
+              const afterCtx = extractContext(afterLines, region.afterStart, region.afterEnd, 5, 1);
+              if (afterCtx.before || afterCtx.changed || afterCtx.after) {
+                markdown += `\n**After:**\n\n`;
+                markdown += "```diff\n";
+                if (afterCtx.before) markdown += afterCtx.before + "\n";
+                if (afterCtx.changed) markdown += afterCtx.changed + "\n";
+                if (afterCtx.after) markdown += afterCtx.after + "\n";
+                markdown += "```\n";
+              }
             }
           }
         }
@@ -285,8 +346,8 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<Acce
     }
   );
   server.tool(
-    REPO_TOOLS.review_pull_request,
-    "Review a pull request by casting a vote (approve, reject, wait, etc.).",
+    REPO_TOOLS.submit_pull_request_vote,
+    "Submit your final reviewer vote on a pull request (approve, reject, wait, etc.). This does not perform a full review, only records your decision.",
     {
       repositoryId: z.string().describe("The repository ID of the pull request's target branch."),
       pullRequestId: z.number().describe("ID of the pull request."),
