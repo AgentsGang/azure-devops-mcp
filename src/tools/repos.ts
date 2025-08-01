@@ -41,7 +41,8 @@ const REPO_TOOLS = {
   resolve_comment: "repo_resolve_comment",
   search_commits: "repo_search_commits",
   list_pull_requests_by_commits: "repo_list_pull_requests_by_commits",
-  review_pull_request: "repo_review_pull_request"
+  review_pull_request: "repo_review_pull_request",
+  read_pull_request_file_diffs: "repo_read_pull_request_file_diffs"
 };
 
 function branchesFilterOutIrrelevantProperties(branches: GitRef[], top: number) {
@@ -99,6 +100,146 @@ function filterReposByName(repositories: GitRepository[], repoNameFilter: string
 }
 
 function configureRepoTools(server: McpServer, tokenProvider: () => Promise<AccessToken>, connectionProvider: () => Promise<WebApi>) {
+  server.tool(
+    REPO_TOOLS.read_pull_request_file_diffs,
+    "Read file diffs for a pull request (PR), including changed files and optionally their content diffs.",
+    {
+      repositoryId: z.string().describe("The ID of the repository where the pull request is located."),
+      pullRequestId: z.number().describe("The ID of the pull request to read diffs for."),
+      top: z.number().optional().default(100).describe("Max number of files to return."),
+      skip: z.number().optional().default(0).describe("Number of files to skip."),
+      includeContent: z.boolean().optional().default(false).describe("Whether to include file content diffs."),
+    },
+    async ({ repositoryId, pullRequestId, top, skip, includeContent }) => {
+      const connection = await connectionProvider();
+      const gitApi = await connection.getGitApi();
+      // Get all iterations and select the latest
+      const iterations = await gitApi.getPullRequestIterations(repositoryId, pullRequestId);
+      if (!iterations || iterations.length === 0) {
+        return {
+          content: [{ type: "text", text: "No iterations found for this pull request." }],
+          isError: true,
+        };
+      }
+      const latestIteration = iterations[iterations.length - 1];
+      const iterationId = latestIteration.id;
+      // Get changes for the latest iteration
+      const changesResult = await gitApi.getPullRequestIterationChanges(repositoryId, pullRequestId, iterationId || 0);
+      const changes = changesResult?.changeEntries || [];
+      // Paginate
+      const paginatedChanges = changes.slice(skip, skip + top);
+
+      // Helper to format context
+      function extractContext(lines: string[], start: number, end: number, context = 50) {
+        const beforeStart = Math.max(0, start - context);
+        const afterEnd = Math.min(lines.length, end + context);
+        return {
+          before: lines.slice(beforeStart, start).join("\n"),
+          changed: lines.slice(start, end).join("\n"),
+          after: lines.slice(end, afterEnd).join("\n"),
+        };
+      }
+
+      // Use diff library for line-by-line diff
+      let diffLib;
+      try {
+        diffLib = require("diff");
+      } catch (e) {
+        diffLib = null;
+      }
+
+      // Format Markdown output
+      let markdown = `# PR File Diffs\n\n`;
+      for (const change of paginatedChanges) {
+        markdown += `## ${change.item?.path || "(unknown path)"}\n`;
+        markdown += `- **Change Type:** ${change.changeType}\n`;
+        if (change.sourceServerItem && change.sourceServerItem !== change.item?.path) {
+          markdown += `- **Renamed from:** ${change.sourceServerItem}\n`;
+        }
+        markdown += `\n`;
+        if (includeContent && change.item?.path && change.item?.objectId) {
+          let beforeContent = "";
+          let afterContent = "";
+          try {
+            // For before content, use previous iteration if possible
+            if (iterations.length > 1) {
+              const prevIterationId = iterations.length > 1 ? iterations[iterations.length - 2].id : iterationId;
+              const prevChangesResult = await gitApi.getPullRequestIterationChanges(repositoryId, pullRequestId, prevIterationId || 0);
+              const prevChange = prevChangesResult?.changeEntries?.find(c => c.item?.path === change.item?.path);
+              if (prevChange && prevChange.item?.objectId) {
+                const prevItem = await gitApi.getItemContent(repositoryId, change.item.path, prevChange.item.objectId);
+                beforeContent = prevItem?.toString() || "";
+              }
+            }
+            // After content
+            const afterItem = await gitApi.getItemContent(repositoryId, change.item.path, change.item.objectId);
+            afterContent = afterItem?.toString() || "";
+          } catch (e) {
+            // Ignore content errors, just skip diff
+          }
+          // Split into lines
+          const beforeLines = beforeContent.split("\n");
+          const afterLines = afterContent.split("\n");
+          let diffRegions = [];
+          if (diffLib) {
+            // Use diff library to get changed regions
+            const changesArr = diffLib.diffLines(beforeContent, afterContent);
+            let beforeIdx = 0, afterIdx = 0;
+            for (const part of changesArr) {
+              if (part.added) {
+                // Added in after
+                diffRegions.push({
+                  type: "added",
+                  beforeStart: beforeIdx,
+                  beforeEnd: beforeIdx,
+                  afterStart: afterIdx,
+                  afterEnd: afterIdx + part.count,
+                });
+                afterIdx += part.count;
+              } else if (part.removed) {
+                // Removed from before
+                diffRegions.push({
+                  type: "removed",
+                  beforeStart: beforeIdx,
+                  beforeEnd: beforeIdx + part.count,
+                  afterStart: afterIdx,
+                  afterEnd: afterIdx,
+                });
+                beforeIdx += part.count;
+              } else {
+                // Unchanged
+                beforeIdx += part.count;
+                afterIdx += part.count;
+              }
+            }
+          }
+          if (diffRegions.length === 0) {
+            // No diff regions, just show first/last 50 lines
+            markdown += `### Before (first 50 lines)\n\n`;
+            markdown += "```diff\n" + beforeLines.slice(0, 50).join("\n") + "\n```\n";
+            markdown += `\n### After (first 50 lines)\n\n`;
+            markdown += "```diff\n" + afterLines.slice(0, 50).join("\n") + "\n```\n";
+          } else {
+            for (const region of diffRegions) {
+              markdown += `### Diff Region (${region.type})\n\n`;
+              // Before context
+              const beforeCtx = extractContext(beforeLines, region.beforeStart, region.beforeEnd, 50);
+              markdown += `**Before Context:**\n\n`;
+              markdown += "```diff\n" + beforeCtx.before + "\n" + beforeCtx.changed + "\n" + beforeCtx.after + "\n```\n";
+              // After context
+              const afterCtx = extractContext(afterLines, region.afterStart, region.afterEnd, 50);
+              markdown += `\n**After Context:**\n\n`;
+              markdown += "```diff\n" + afterCtx.before + "\n" + afterCtx.changed + "\n" + afterCtx.after + "\n```\n";
+            }
+          }
+        }
+        markdown += `\n---\n`;
+      }
+      return {
+        content: [{ type: "text", text: markdown }],
+      };
+    }
+  );
   server.tool(
     REPO_TOOLS.create_pull_request,
     "Create a new pull request.",
