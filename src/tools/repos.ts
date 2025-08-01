@@ -114,15 +114,27 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<Acce
     {
       repositoryId: z.string().describe("The ID of the repository where the pull request is located."),
       pullRequestId: z.number().describe("The ID of the pull request to read diffs for."),
+      project: z.string().optional().describe("The name or ID of the project (required if repositoryId is a name)."),
       top: z.number().optional().default(100).describe("Max number of files to return."),
       skip: z.number().optional().default(0).describe("Number of files to skip."),
       includeContent: z.boolean().optional().default(false).describe("Whether to include file content diffs."),
     },
-    async ({ repositoryId, pullRequestId, top, skip, includeContent }) => {
+    async ({ repositoryId, pullRequestId, project, top, skip, includeContent }) => {
+      // Helper function to convert ReadableStream to string
+      const streamToString = async (stream: NodeJS.ReadableStream): Promise<string> => {
+        return new Promise((resolve, reject) => {
+          const chunks: Buffer[] = [];
+          stream.on('data', (chunk: Buffer) => chunks.push(chunk));
+          stream.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+          stream.on('error', reject);
+        });
+      };
+
       const connection = await connectionProvider();
       const gitApi = await connection.getGitApi();
+      
       // Get all iterations and select the latest
-      const iterations = await gitApi.getPullRequestIterations(repositoryId, pullRequestId);
+      const iterations = await gitApi.getPullRequestIterations(repositoryId, pullRequestId, project);
       if (!iterations || iterations.length === 0) {
         return {
           content: [{ type: "text", text: "No iterations found for this pull request." }],
@@ -131,8 +143,20 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<Acce
       }
       const latestIteration = iterations[iterations.length - 1];
       const iterationId = latestIteration.id;
+      
+      // Get the source and target commit IDs from the iteration
+      const sourceCommitId = latestIteration.sourceRefCommit?.commitId;
+      const targetCommitId = latestIteration.targetRefCommit?.commitId;
+      
+      if (!sourceCommitId || !targetCommitId) {
+        return {
+          content: [{ type: "text", text: "Could not determine source or target commit IDs for this pull request." }],
+          isError: true,
+        };
+      }
+      
       // Get changes for the latest iteration
-      const changesResult = await gitApi.getPullRequestIterationChanges(repositoryId, pullRequestId, iterationId || 0);
+      const changesResult = await gitApi.getPullRequestIterationChanges(repositoryId, pullRequestId, iterationId || 0, project);
       const changes = changesResult?.changeEntries || [];
       // Paginate
       const paginatedChanges = changes.slice(skip, skip + top);
@@ -165,39 +189,51 @@ function configureRepoTools(server: McpServer, tokenProvider: () => Promise<Acce
           markdown += `- **Renamed from:** ${change.sourceServerItem}\n`;
         }
         markdown += `\n`;
-        if (includeContent && change.item?.path && change.item?.objectId) {
+        if (includeContent && change.item?.path) {
           let beforeContent = "";
           let afterContent = "";
           try {
-            // For before content, use previous iteration if possible
-            if (iterations.length > 1) {
-              const prevIterationId = iterations.length > 1 ? iterations[iterations.length - 2].id : iterationId;
-              const prevChangesResult = await gitApi.getPullRequestIterationChanges(repositoryId, pullRequestId, prevIterationId || 0);
-              const prevChange = prevChangesResult?.changeEntries?.find(c => c.item?.path === change.item?.path);
-              if (prevChange && prevChange.item?.objectId) {
-                const prevItem = await gitApi.getItemContent(repositoryId, change.item.path, prevChange.item.objectId);
-                // Convert buffer/object to string properly
-                if (prevItem) {
-                  if (Buffer.isBuffer(prevItem)) {
-                    beforeContent = prevItem.toString('utf8');
-                  } else if (typeof prevItem === 'string') {
-                    beforeContent = prevItem;
-                  } else {
-                    beforeContent = String(prevItem);
-                  }
+            // For before content, get from target branch (what the PR is merging into)
+            // For adds, there's no before content
+            if (change.changeType !== 1) { // Not an add operation
+              const beforeItem = await gitApi.getItemContent(
+                repositoryId, 
+                change.item.path, 
+                project, 
+                undefined, // scopePath 
+                undefined, // recursionLevel
+                undefined, // includeContentMetadata
+                undefined, // latestProcessedChange
+                undefined, // download
+                { 
+                  versionType: GitVersionType.Commit,
+                  version: targetCommitId
                 }
+              );
+              if (beforeItem) {
+                beforeContent = await streamToString(beforeItem);
               }
             }
-            // After content
-            const afterItem = await gitApi.getItemContent(repositoryId, change.item.path, change.item.objectId);
-            // Convert buffer/object to string properly
-            if (afterItem) {
-              if (Buffer.isBuffer(afterItem)) {
-                afterContent = afterItem.toString('utf8');
-              } else if (typeof afterItem === 'string') {
-                afterContent = afterItem;
-              } else {
-                afterContent = String(afterItem);
+            
+            // For after content, get from source branch (what the PR is bringing in)
+            // For deletes, there's no after content
+            if (change.changeType !== 2) { // Not a delete operation
+              const afterItem = await gitApi.getItemContent(
+                repositoryId, 
+                change.item.path, 
+                project, 
+                undefined, // scopePath
+                undefined, // recursionLevel
+                undefined, // includeContentMetadata
+                undefined, // latestProcessedChange
+                undefined, // download
+                { 
+                  versionType: GitVersionType.Commit,
+                  version: sourceCommitId
+                }
+              );
+              if (afterItem) {
+                afterContent = await streamToString(afterItem);
               }
             }
           } catch (error) {
